@@ -1,13 +1,13 @@
-
 (require 'hippie-expand-distel)
 
 ;;;###autoload
-(defun company-hippie-distel (command &optional args &rest ignore)
+(defun company-distel (command &optional args &rest ignore)
   (interactive (list 'interactive))
   (case command
-    (interactive (company-begin-backend 'company-hippie-distel))
+    (interactive (company-begin-backend 'company-distel))
     (prefix ;; nar ska functionen slas pa? returnera ordet man ar pa.
-     (let* ((isfunc (eql (char-before) ?:))
+     (let* ((no-comment (not (erl-company-is-comment-or-cite)))
+	    (isfunc (eql (char-before) ?:))
 	    (word (if isfunc
 		      (buffer-substring (point) (save-excursion
 						  (backward-char)
@@ -16,6 +16,7 @@
 		    (company-grab-word))))
        (and
 	(eq (derived-mode-p 'erlang-mode) 'erlang-mode)
+	no-comment
 	(or
 	 word
 	 'stop))))
@@ -24,8 +25,7 @@
     (meta
      (let* ((mod (erl-company-get-module-p args))
 	    (fun (erl-company-get-function-p args))
-	    (met (erl-company-get-metadoc mod fun))
-	    doc)
+	    (met (erl-company-get-metadoc mod fun)))
        (erl-company-format-arglists met)))
     (doc-buffer
      (let* ((mod (erl-company-get-module-p args))
@@ -47,21 +47,33 @@
     (t ;(message "(%s):%s" command args)
        nil)))
 
+(defun erl-company-is-comment-or-cite ()
+  (save-excursion
+    (let ((po (point)))
+      (beginning-of-line)
+      (re-search-forward "[%\|\"|\']" po t)
+      (or (eql (char-before) ?%)
+	  (and (or (eql (char-before) ?\")
+		   (eql (char-before) ?\'))
+	       (not (re-search-forward "[\"\|\']" po t)))))))
+
 (defun erl-company-get-docs-from-internet-p (mod fun) ;; maybe version?
   "Download the documentation from internet."
-  (erl-company-html-to-string
-   (with-current-buffer 
-       (url-retrieve-synchronously (format "http://www.erlang.org/doc/man/%s.html" mod))
-     (goto-char (point-min))
-
-     ;; find <p> containing <a name="module"> then
-     ;; find <div class="REFBODY">
-     (re-search-forward (format "<p>.*?<a name=\"%s.*?\">" fun))
-
-     (let* ((beg (match-beginning 0))
-	    (end (progn (re-search-forward "</p>.*?</div>" nil t)
-			(match-end 0))))
-       (and beg end (buffer-substring beg end))))))
+  (let ((str
+	 (with-current-buffer 
+	     (url-retrieve-synchronously (format "http://www.erlang.org/doc/man/%s.html" mod))
+	   (goto-char (point-min))
+	   
+	   ;; find <p> containing <a name="module"> then
+	   ;; find <div class="REFBODY">
+	   
+	   (let* ((m (re-search-forward (format "<p>.*?<a name=\"%s.*?\">" fun) nil t))
+		  (beg (and m (match-beginning 0)))
+		  (end (and m (progn (re-search-forward "</p>.*?</div>" nil t)
+				     (match-end 0)))))
+	     (and beg end (buffer-substring beg end))))))
+    (and str
+	 (erl-company-html-to-string str))))
 
 (defun erl-company-html-to-string (string)
   (let ((tagslist '(("^[[:space:]]+" . "")
@@ -172,4 +184,4 @@
 	(message "fail: %s" else)
 	(setq try-erl-args-cache nil)))))
 
-(provide 'company-hippie-distel)
+(provide 'company-distel)
