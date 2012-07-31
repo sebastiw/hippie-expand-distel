@@ -1,4 +1,7 @@
 (require 'hippie-expand-distel)
+(require 'popup)
+
+(defvar use-popup nil)
 
 ;;;###autoload
 (defun company-distel (command &optional args &rest ignore)
@@ -7,45 +10,48 @@
     (interactive (company-begin-backend 'company-distel))
     (prefix ;; nar ska functionen slas pa? returnera ordet man ar pa.
      (let* ((no-comment (not (erl-company-is-comment-or-cite)))
-	    (isfunc (eql (char-before) ?:))
-	    (word (if isfunc
-		      (buffer-substring (point) (save-excursion
-						  (backward-char)
-						  (skip-syntax-backward "w")
-						  (point)))
-		    (company-grab-word))))
+	    (word (erl-company-grab-word)))
        (and
 	(eq (derived-mode-p 'erlang-mode) 'erlang-mode)
-	no-comment
 	(or
-	 word
+	 (and no-comment word)
 	 'stop))))
     (candidates ;; vilka ord returneras
      (erl-company-candidates args))
     (meta
-     (let* ((mod (erl-company-get-module-p args))
-	    (fun (erl-company-get-function-p args))
+     (let* ((isok (string-match ":" args))
+	    (mod (and isok (substring args 0 isok)))
+	    (fun (and isok (substring args (+ isok 1))))
 	    (met (erl-company-get-metadoc mod fun)))
        (erl-company-format-arglists met)))
     (doc-buffer
-     (let* ((mod (erl-company-get-module-p args))
-	    (fun (erl-company-get-function-p args))
+     (let* ((isok (string-match ":" args))
+	    (mod (and isok (substring args 0 isok)))
+	    (fun (and isok (substring args (+ isok 1))))
 	    (doc (erl-company-local-docs mod fun))
-	    (edocs (unless doc (erl-company-get-docs-from-internet-p mod fun)))
-	    descr)
+	    (edocs (when (string= doc "") (erl-company-get-docs-from-internet-p mod fun)))
+	    (met (erl-company-get-metadoc mod fun))
+	    descr to-show popup)
 
-       (unless (and doc edocs)
-	 (dolist (arg try-erl-args-cache descr)
-	   (setq descr (concat descr mod ":" fun (format "%s" arg) "\n"))))
+       (dolist (arg met descr)
+	 (setq descr (concat descr mod ":" fun (format "%s" (or arg "()")) "\n")))
+       (setq to-show (or (and (not (string= doc "")) doc)
+			 (and (not (string= edocs "")) edocs)
+			 descr
+			 (format "Couldn't find any help for %s:%s" mod fun)))
+       (when use-popup (popup-tip to-show))
        (with-current-buffer (company-doc-buffer)
-	 (when doc (insert (format "%s" doc)))
-	 (when edocs (insert edocs))
-	 (unless edocs (insert descr))
-	 (unless descr (insert (format "Couldn't find any help for %s:%s" mod fun)))
+	 (insert to-show)
 	 (current-buffer))))
-    
+
     (t ;(message "(%s):%s" command args)
        nil)))
+
+(defun erl-company-grab-word ()
+  (interactive)
+  (buffer-substring (point) (save-excursion
+			      (skip-chars-backward "a-zA-Z:_")
+			      (point))))
 
 (defun erl-company-is-comment-or-cite ()
   (save-excursion
@@ -57,6 +63,7 @@
 		   (eql (char-before) ?\'))
 	       (not (re-search-forward "[\"\|\']" po t)))))))
 
+;; if no internetconnection
 (defun erl-company-get-docs-from-internet-p (mod fun) ;; maybe version?
   "Download the documentation from internet."
   (let ((str
@@ -76,17 +83,17 @@
 	 (erl-company-html-to-string str))))
 
 (defun erl-company-html-to-string (string)
-  (let ((tagslist '(("^[[:space:]]+" . "")
+  (let ((replaces '(("^[[:space:]]+" . "")
 		    ("</?p>" . "\n")
 		    ("<br>" . "\n")
 		    ("<[^>]*>" . "")
 		    (" $" . "")
 		    ("&gt;" . ">")
 		    ("&lt;" . "<"))))
-    (dolist (tagpair tagslist string)
+    (dolist (tagpair replaces string)
       (setq string (replace-regexp-in-string (car tagpair) (cdr tagpair) string)))))
 
-;; because cant reach distels??
+;; because cant find distels??
 (defun erl-company-format-arglists (arglists)
   (format "%s"
 	  (mapconcat 'identity
@@ -97,50 +104,14 @@
 		     " | ")))
 
 (defun erl-company-candidates (args)
-  (let ((ismod (eql (char-before) ?:))
-	(ismodfunc (eql (char-before (- (point) (length args))) ?:)))
-    (if ismod (let ((comp (try-erl-complete args (- (point) (length args))))
-		    (temp-list '()))
-		(dolist (x comp temp-list) (add-to-list 'temp-list (concat args x))))
-      (if ismodfunc (let* ((mod (erl-company-get-module-p args))
-			   (beg (- (point) (+ (length args) (length mod) 1))))
-		      (try-erl-complete (concat mod ":" args) beg))
-	(try-erl-complete args (- (point) (length args)))))))
-
-(defun erl-company-get-module-p (args)
-  "Return modulename or nil looking back from point."
-  (let ((ismod (eql (char-before) ?:))
-	(ismodfunc (eql (char-before (save-excursion
-				       (skip-syntax-backward "w")
-				       (point))) ?:))
-	(point-before (save-excursion
-			(skip-syntax-backward "w")
-			(point))))
-    (or (and ismod
-	     (buffer-substring (- (point) 1) (save-excursion
-					       (backward-char)
-					       (skip-syntax-backward "w")
-					       (point))))
-	(and ismodfunc
-	     (buffer-substring (- point-before 1) (save-excursion
-						    (skip-syntax-backward "w")
-						    (backward-char)
-						    (skip-syntax-backward "w")
-						    (point)))))))
-(defun erl-company-get-function-p (args)
-  (let ((ismod (eql (char-before) ?:))
-	(ismodfunc (eql (char-before (save-excursion
-				       (skip-syntax-backward "w")
-				       (point))) ?:)))
-    (or (and
-	 ismod
-	 (substring args (+ (string-match ":" args) 1)))
-	(and
-	 ismodfunc
-	 args))))
+  (let* ((isfun (string-match ":" args))
+	 (mod (and isfun (substring args 0 (+ isfun 1))))
+	 (comp (try-erl-complete (downcase args) 0))
+	 ret)
+    (dolist (x comp ret) (add-to-list 'ret (concat mod x)))))
 
 (defvar try-erl-args-cache nil)
-(defvar try-erl-desc-cache nil)
+(defvar try-erl-desc-cache "")
 
 (defun erl-company-get-metadoc (mod fun)
   (let ((node erl-nodename-cache))
@@ -151,22 +122,26 @@
 (defun erl-company-local-docs (mod fun)
   (erl-company-get-metadoc mod fun)
   (let ((node erl-nodename-cache))
-    (setq try-erl-desc-cache '())
+    (setq try-erl-desc-cache "")
     (dolist (args try-erl-args-cache)
-      (erl-company-describe mod fun args))
-    (sleep-for 0.1)
-   try-erl-desc-cache))
+      (erl-company-describe mod fun args)))
+  (sleep-for 0.1)
+  try-erl-desc-cache)
 
 (defun erl-company-describe (mod fun args)
   (erl-spawn
     (erl-send-rpc node 'distel 'describe (list (intern mod) (intern fun) (length args)))
-    (&erl-company-receive-describe args))
-  try-erl-desc-cache)
+    (&erl-company-receive-describe args)))
 
 (defun &erl-company-receive-describe (args)
   (erl-receive (args)
       ((['rex ['ok desc]]
-	(setq try-erl-desc-cache (nconc desc try-erl-desc-cache)))
+	(let ((descr (format "%s:%s/%s\n%s\n\n"
+			     (elt (car desc) 0)
+			     (elt (car desc) 1)
+			     (elt (car desc) 2)
+			     (elt (car desc) 3))))
+	(when desc (setq try-erl-desc-cache (concat descr try-erl-desc-cache)))))
        (else
 	(message "fail: %s" else)))))
 
