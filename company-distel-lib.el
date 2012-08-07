@@ -5,7 +5,6 @@
 ;;; docs funs         ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; if no internetconnection
 (defun erl-company-get-docs-from-internet-p (mod fun) ;; maybe version?
   "Download the documentation from internet."
   (let ((str
@@ -16,8 +15,9 @@
 	   ;; find <p> containing <a name="module"> then
 	   ;; find <div class="REFBODY">
 	   
-	   (let* ((m (re-search-forward (format "<p>.*?<a name=\"%s.*?\">" fun) nil t))
-		  (beg (and m (match-beginning 0)))
+	   (let* ((m (re-search-forward (or (and fun (format "<p>.*?<a name=\"%s.*?\">" fun))
+					    "<h3>DESCRIPTION</h3>") nil t))
+		  (beg (and m (match-end 0)))
 		  (end (and m (progn (re-search-forward "</p>.*?</div>" nil t)
 				     (match-end 0)))))
 	     (and beg end (buffer-substring beg end))))))
@@ -25,11 +25,12 @@
 	 (erl-company-html-to-string str))))
 
 (defun erl-company-html-to-string (string)
-  (let ((replaces '(("^[[:space:]]+" . "")
-		    ("</?p>" . "\n")
+  (let ((replaces '(("</?p>" . "\n")
 		    ("<br>" . "\n")
 		    ("<[^>]*>" . "")
-		    (" $" . "")
+		    ("[[:space:]|\n]$" . "")
+		    ("^[[:space:]]+" . "")
+		    ("^\n[\n]+" . "")
 		    ("&gt;" . ">")
 		    ("&lt;" . "<"))))
     (dolist (tagpair replaces string)
@@ -39,15 +40,28 @@
 ;;; Distel funs       ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun try-erl-company-complete (search-string buf)
+  (erl-company-complete search-string buf)
+  (sleep-for 0.1)
+  try-erl-complete-candidates-cache)
+
+(defun erl-company-complete (search-string buf)
+  "Complete search-string as a module or function in current buffer."
+  (let* ((isok (string-match ":" search-string))
+	 (mod (and isok (substring search-string 0 isok)))
+	 (fun (and isok (substring search-string (+ isok 1))))
+	 (node erl-nodename-cache))
+    (if isok (erl-complete-function mod fun buf)
+      (erl-complete-module search-string buf))))
+
 (defun erl-company-candidates (args)
   "Get completion candidates for args."
   (let* ((isfun (string-match ":" args))
 	 (mod (and isfun (substring args 0 (+ isfun 1))))
-	 (comp (try-erl-complete (downcase args) 0))
-	 ret)
-    (dolist (x comp ret) (add-to-list 'ret (concat mod x)))))
+	 (comp (try-erl-complete args 0)))
+    (mapcar (lambda (item) (concat mod item)) comp)))
 
-(defvar try-erl-args-cache nil)
+(defvar try-erl-args-cache '())
 (defvar try-erl-desc-cache "")
 
 (defun erl-company-get-metadoc (mod fun)
@@ -87,16 +101,16 @@
 (defun erl-company-args (mod fun)
   (erl-spawn
     (erl-send-rpc node 'distel 'get_arglists (list mod fun))
-    (&erl-company-receive-args))
-  try-erl-args-cache)
+    (&erl-company-receive-args)))
 
 (defun &erl-company-receive-args ()
   (erl-receive ()
-      ((['rex docs]
+      ((['rex 'error])
+       (['rex docs]
 	(setq try-erl-args-cache docs))
        (else
 	(message "fail: %s" else)
-	(setq try-erl-args-cache nil)))))
+	(setq try-erl-args-cache '())))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Local buffer funs ;;;
